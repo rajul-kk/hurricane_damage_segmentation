@@ -97,20 +97,61 @@ python train_model.py \
 
 ### Inference
 
-Assess damage on a single image:
+The inference pipeline has 3 steps:
+
+#### 1. Tile the large satellite map
+Large satellite maps (e.g., 4000x4000 pixels) must be cut into smaller chips (224x224) for the neural network:
+
 ```bash
-python assess_damage.py \
-    --model-path outputs/best_model.pth \
-    --image-path path/to/satellite_image.jpg
+# Tile a single image
+python -m src.tiler path/to/large_map.tif outputs/chips --chip-size 224
+
+# With 50% overlap (for smoother predictions)
+python -m src.tiler path/to/large_map.tif outputs/chips --overlap 0.5
 ```
 
-Batch process a directory of images:
-```bash
-python assess_damage.py \
-    --model-path outputs/best_model.pth \
-    --image-dir path/to/images/ \
-    --output-dir outputs/inference
+Or use in Python:
+```python
+from src.tiler import tile_image, tile_image_generator
+
+# Save chips to disk
+chips = tile_image("map.tif", "outputs/chips", chip_size=224)
+
+# Or stream chips for on-the-fly inference (no disk I/O)
+for chip, row, col, metadata in tile_image_generator("map.tif"):
+    prediction = model.predict(chip)
 ```
+
+#### 2. Classify each chip
+Run the classifier on each chip:
+```python
+from src.classifier import DamageClassifier
+
+classifier = DamageClassifier(backbone="resnet18", pretrained=False)
+classifier.load_state_dict(torch.load("outputs/best_model.pth"))
+classifier.eval()
+
+predictions = {}
+for chip, row, col, meta in tile_image_generator("map.tif"):
+    pred = classifier.predict(chip)
+    predictions[(row, col)] = {"label": pred["class"], "confidence": pred["confidence"]}
+```
+
+#### 3. Stitch predictions back with overlays
+Use the stitcher to apply semi-transparent overlays on damaged regions:
+```python
+from src.stitcher import stitch_predictions
+
+result = stitch_predictions(
+    original_image_path="map.tif",
+    chip_predictions=predictions,
+    chip_size=224,
+    overlay_alpha=128,  # 50% transparency
+    output_path="outputs/damage_heatmap.png"
+)
+```
+
+See `examples/stitcher_demo.py` for a complete working example.
 
 ## Model Architecture
 
